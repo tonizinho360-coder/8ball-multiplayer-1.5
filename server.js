@@ -84,7 +84,15 @@ io.on('connection',socket=>{
  socket.on('match:shot-start',(data={},ack)=>{
   const match=matches.get(String(data.matchId||''));if(!match||!match.started||match.ended)return replyError(ack,'Partida online indisponível.');
   const slot=match.players.indexOf(socket.id);if(slot<0||slot!==match.currentPlayer)return replyError(ack,'Ainda não é sua vez de jogar.');
-  io.to(match.id).emit('match:opponent-shot',{slot,name:data.name||'Adversário'});
+  // ALTERADO AQUI - valida e transmite o estado da tacada no instante do impacto.
+  // O adversário recebe posições, velocidades e dados da jogada para iniciar a mesma animação.
+  if(!data.state||!Array.isArray(data.state.balls)||data.state.balls.length>16)
+   return replyError(ack,'Dados da tacada inválidos.');
+  const motionState=data.state;
+  if(!motionState.balls.every(ball=>Number.isFinite(ball.x)&&Number.isFinite(ball.y)&&Number.isFinite(ball.vx)&&Number.isFinite(ball.vy)))
+   return replyError(ack,'Posições ou velocidades da tacada inválidas.');
+  io.to(match.id).emit('match:opponent-shot',{slot,name:safeName(data.name)});
+  io.to(match.id).emit('match:shot-motion',{slot,state:motionState});
   if(typeof ack==='function')ack({ok:true});
  });
  // ALTERADO AQUI - recebe e replica o estado completo da mesa ao terminar cada tacada.
