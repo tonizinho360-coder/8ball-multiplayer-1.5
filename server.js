@@ -51,6 +51,38 @@ function makeBracket(players){
 }
 function replyError(ack,message){ if(typeof ack==='function')ack({ok:false,error:{message}}); }
 function getRoom(codeValue){return rooms.get(String(codeValue||'').trim().toUpperCase());}
+// ALTERADO AQUI - controla 60 segundos de inatividade por participante, no relógio do servidor.
+const INACTIVITY_LIMIT_MS=60000;
+function clearMatchInactivity(match){
+ if(!match?.inactivityTimers)return;
+ match.inactivityTimers.forEach(timer=>{if(timer)clearTimeout(timer);});
+ match.inactivityTimers=[null,null];
+}
+function finishMatchByInactivity(match,loserSlot){
+ if(!match||match.ended)return;
+ const now=Date.now(),winnerSlot=loserSlot===0?1:0;
+ const bothInactive=now-(match.lastActivity?.[winnerSlot]||0)>=INACTIVITY_LIMIT_MS;
+ match.ended=true;clearMatchInactivity(match);
+ const room=getRoom(match.code);
+ let winner=null;
+ if(!bothInactive&&room){
+  const finalMatch=room.bracket?.[0]?.matches?.[0];
+  winner=finalMatch?.[winnerSlot===0?'a':'b']||null;
+  if(finalMatch){finalMatch.winner=winner?{...winner}:null;finalMatch.status=bothInactive?'ENCERRADA POR INATIVIDADE':'ENCERRADA POR DESISTÊNCIA';finalMatch.result={type:'forfeit',winnerSlot:bothInactive?null:winnerSlot,loserSlot};}
+ }
+ const result={matchId:match.id,code:match.code,loserSlot,winnerSlot:bothInactive?null:winnerSlot,winner:winner?{id:winner.id,name:winner.name}:null,bothInactive,bracket:room?.bracket||null};
+ match.forfeit=result;
+ if(room)io.to(room.code).emit('tournament:bracket-update',{code:room.code,bracket:room.bracket});
+ io.to(match.id).emit('match:forfeit',result);
+}
+function resetMatchInactivity(match,slot){
+ if(!match||match.ended||!match.started||slot<0||slot>1)return;
+ if(!Array.isArray(match.lastActivity))match.lastActivity=[Date.now(),Date.now()];
+ if(!Array.isArray(match.inactivityTimers))match.inactivityTimers=[null,null];
+ match.lastActivity[slot]=Date.now();
+ if(match.inactivityTimers[slot])clearTimeout(match.inactivityTimers[slot]);
+ match.inactivityTimers[slot]=setTimeout(()=>finishMatchByInactivity(match,slot),INACTIVITY_LIMIT_MS);
+}
 io.on('connection',socket=>{
  socket.on('tournament:create',(data={},ack)=>{
   const size=Number(data.size); if(!FORMATS.has(size))return replyError(ack,'Formato de torneio inválido.');
@@ -92,17 +124,29 @@ io.on('connection',socket=>{
   if(roomPlayer&&roomPlayer.id!==socket.id){const oldId=roomPlayer.id;roomPlayer.id=socket.id;if(room.hostId===oldId)room.hostId=socket.id;finalMatch[slot===0?'a':'b'].id=socket.id;}
   const matchId=room.code+':'+finalMatch.matchId;
   let match=matches.get(matchId);
-  if(!match){match={id:matchId,code:room.code,players:[null,null],state:null,currentPlayer:0,started:false,ended:false};matches.set(matchId,match);}
+  if(!match){match={id:matchId,code:room.code,players:[null,null],state:null,currentPlayer:0,started:false,ended:false,inactivityTimers:[null,null],lastActivity:[0,0]};matches.set(matchId,match);}
   match.players[slot]=socket.id;socket.join(matchId);
   const playerNames=[finalMatch.a.name,finalMatch.b.name];
-  if(typeof ack==='function')ack({ok:true,matchId,slot,players:playerNames,state:match.state,ready:match.players.every(Boolean)});
+  if(typeof ack==='function')ack({ok:true,matchId,slot,players:playerNames,state:match.state,ready:match.players.every(Boolean),ended:!!match.ended,forfeit:match.forfeit||null});
+  if(match.ended)return;
   io.to(matchId).emit('match:presence',{players:match.players.map(Boolean),names:playerNames});
   if(match.players.every(Boolean)){
    match.started=true;
+   // ALTERADO AQUI - inicia os dois relógios invisíveis de inatividade assim que a partida fica pronta.
+   if(!match.lastActivity.some(Boolean)){match.lastActivity=[Date.now(),Date.now()];resetMatchInactivity(match,0);resetMatchInactivity(match,1);}
    io.to(matchId).emit('match:ready',{matchId,names:playerNames,state:match.state,currentPlayer:match.currentPlayer});
    if(!match.state)io.to(match.players[0]).emit('match:initialize-request',{matchId});
    else io.to(matchId).emit('match:state',match.state);
   }
+ });
+ // ALTERADO AQUI - qualquer interação na mesa renova somente o relógio invisível daquele jogador.
+ socket.on('match:activity',(data={},ack)=>{
+  const match=matches.get(String(data.matchId||''));
+  if(!match||!match.started||match.ended)return replyError(ack,'Partida online indisponível.');
+  const slot=match.players.indexOf(socket.id);
+  if(slot<0)return replyError(ack,'Você não pertence a esta partida.');
+  resetMatchInactivity(match,slot);
+  if(typeof ack==='function')ack({ok:true});
  });
  // ALTERADO AQUI - apenas o jogador da vez pode anunciar o início de uma tacada.
  socket.on('match:shot-start',(data={},ack)=>{
@@ -141,8 +185,9 @@ io.on('connection',socket=>{
   if(data.timeout&&slot!==match.currentPlayer)return replyError(ack,'Relógio enviado fora da vez.');
   if(!data.state||!Array.isArray(data.state.balls)||data.state.balls.length>16)return replyError(ack,'Estado da mesa inválido.');
   match.state=data.state;
+  resetMatchInactivity(match,slot);
   match.currentPlayer=Number(data.state.currentPlayer)===1?1:0;
-  if(data.state.gameOver)match.ended=true;
+  if(data.state.gameOver){match.ended=true;clearMatchInactivity(match);}
   io.to(match.id).emit('match:state',match.state);
   if(typeof ack==='function')ack({ok:true});
  });
