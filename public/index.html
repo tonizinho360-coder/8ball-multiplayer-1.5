@@ -1584,6 +1584,29 @@ let tournamentSocketReady=false;
 // ALTERADO AQUI - estado da partida online do torneio FINAL.
 let onlineMatchId=null,onlinePlayerIndex=-1,onlineMatchNames=[],onlineMatchReady=false,onlineApplyingState=false;
 let lastOnlineMotionAt=0;
+// ALTERADO AQUI - envia atividade ao servidor com limite de frequência, sem exibir contador na tela.
+let lastOnlineActivitySentAt=0;
+function sendOnlineActivity(force=false){
+ if(gameMode!=="online"||!onlineMatchId||!onlineMatchReady||!tournamentSocket?.connected)return;
+ const now=Date.now();
+ if(!force&&now-lastOnlineActivitySentAt<3000)return;
+ lastOnlineActivitySentAt=now;
+ tournamentSocket.emit("match:activity",{matchId:onlineMatchId});
+}
+function handleOnlineForfeit(data){
+ if(!data||data.matchId!==onlineMatchId)return;
+ gameOver=true;moving=false;aiming=false;pointer=null;forceDragging=false;shotData=null;
+ const message=data.bothInactive?"PARTIDA ENCERRADA POR INATIVIDADE":data.loserSlot===onlinePlayerIndex?"DESISTÊNCIA SUA":"SEU ADVERSÁRIO FOI EXPULSO";
+ setStatus(message);
+ if(data.bracket&&tournamentRoom)tournamentRoom.bracket=data.bracket;
+ alert(message);
+ onlineMatchId=null;
+ document.getElementById("matchScreen").style.display="none";
+ document.getElementById("tournamentInfo").style.display="block";
+ if(tournamentRoom?.bracket)renderBracket();
+ showTournamentSubView("bracketView");
+ onlineMatchReady=false;
+}
 // ALTERADO AQUI - identifica o participante mesmo quando o navegador reconecta com outro socket.id.
 function tournamentPlayerKey(){
  const keyName="eightballTournamentPlayerKey";
@@ -1614,6 +1637,9 @@ function applyOnlineMotion(state){
  pottedBy=Array.isArray(state.pottedBy)?state.pottedBy.map(a=>[...a]):[[],[]];
  pendingOpenTablePots=Array.isArray(state.pendingOpenTablePots)?state.pendingOpenTablePots.map(a=>[...a]):[[],[]];
  if(state.shotData)shotData=JSON.parse(JSON.stringify(state.shotData));
+ // ALTERADO AQUI - mantém o mesmo valor de relógio nos dois clientes durante a animação recebida.
+ if(Number.isFinite(Number(state.matchSeconds)))matchSeconds=Number(state.matchSeconds);
+ if(Number.isFinite(Number(state.turnSeconds)))turnSeconds=Number(state.turnSeconds);
  moving=state.moving!==false;aiming=false;pointer=null;forceDragging=false;cueDrag=null;placingCue=false;
  if(firstMotion){shotElapsedMs=0;motionQuietFrames=0;physicsAccumulator=0;}
  updateHUD();renderTimer();renderMatchClock();draw();
@@ -1644,6 +1670,7 @@ function joinOnlineFinal(){
   if(!response?.ok){tournamentAckError(response?.error||{message:"Não foi possível entrar na partida."});return;}
   onlineMatchId=response.matchId;onlinePlayerIndex=response.slot;onlineMatchNames=response.players||[];
   onlineMatchReady=!!response.ready;
+  if(response.ended&&response.forfeit){handleOnlineForfeit(response.forfeit);return;}
   setStatus("Entrando na partida online...");
   if(response.state)applyOnlineState(response.state);
   if(response.ready&&!document.getElementById("matchScreen").style.display.includes("flex"))startGame("online");
@@ -1654,7 +1681,7 @@ function connectTournamentSocket(){
  if(tournamentSocket)return tournamentSocket;
  // ALTERADO AQUI - conecta ao endereço público do servidor multiplayer no Render.
  tournamentSocket=io("https://eightball-multiplayer-1-5.onrender.com",{transports:["websocket","polling"],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:5000});
- tournamentSocket.on("connect",()=>{tournamentSocketReady=true;const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="🟢 Conectado ao servidor multiplayer.";});
+ tournamentSocket.on("connect",()=>{tournamentSocketReady=true;const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="🟢 Conectado ao servidor multiplayer.";if(onlineMatchId&&gameMode==="online"&&tournamentRoom)setTimeout(()=>joinOnlineFinal(),0);});
  tournamentSocket.on("disconnect",()=>{tournamentSocketReady=false;const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="🔴 Conexão perdida. Tentando reconectar...";});
  tournamentSocket.on("connect_error",()=>{const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="Não foi possível conectar. Verifique se o servidor está iniciado.";});
  tournamentSocket.on("tournament:room-update",room=>{
@@ -1672,6 +1699,7 @@ function connectTournamentSocket(){
  tournamentSocket.on("match:ready",data=>{
   if(!data||!onlineMatchId||data.matchId!==onlineMatchId)return;
   onlineMatchReady=true;onlineMatchNames=data.names||onlineMatchNames;
+  sendOnlineActivity(true);
   attach8BallChatSocket(tournamentSocket,onlineMatchId);
   if(gameMode!=="online")startGame("online");
  });
@@ -1692,6 +1720,14 @@ function connectTournamentSocket(){
  });
  tournamentSocket.on("match:presence",data=>{
   if(gameMode==="online"&&data?.disconnectedSlot!==undefined)setStatus("O adversário perdeu a conexão. Aguardando retorno...");
+ });
+ // ALTERADO AQUI - encerra a partida para os dois clientes e devolve ambos ao chaveamento.
+ tournamentSocket.on("match:forfeit",data=>handleOnlineForfeit(data));
+ // ALTERADO AQUI - atualiza o chaveamento com o vencedor por desistência.
+ tournamentSocket.on("tournament:bracket-update",data=>{
+  if(!tournamentRoom||data?.code!==tournamentRoom.code)return;
+  tournamentRoom.bracket=data.bracket||tournamentRoom.bracket;
+  renderBracket();
  });
  tournamentSocket.on("tournament:error",message=>{alert(message);});
  return tournamentSocket;
@@ -1749,8 +1785,10 @@ function renderBracket(){
    const a=document.createElement("span");a.className="versus";a.textContent="🎱 "+(match.a?.name||match.a);
    const b=document.createElement("span");b.className="versus";b.textContent="VS "+(match.b?.name||match.b);
    card.append(label,a,b);
-   // ALTERADO AQUI - botão JOGAR disponível para os dois finalistas do torneio de 2 jogadores.
-   if(tournamentRoom.size===2&&ri===0&&match.a?.id&&match.b?.id){
+   // ALTERADO AQUI - exibe o resultado oficial da partida, inclusive quando ambos ficaram inativos.
+   if(match.winner||match.status){const result=document.createElement("strong");result.className="versus";result.textContent=(match.winner?"🏆 VENCEDOR: "+(match.winner.name||"PARTICIPANTE")+" • ":"")+ (match.status||"");card.appendChild(result);}
+   // ALTERADO AQUI - botão JOGAR disponível somente enquanto a final ainda não foi encerrada.
+   if(tournamentRoom.size===2&&ri===0&&match.a?.id&&match.b?.id&&!match.status){
     const play=document.createElement("button");play.type="button";play.textContent="JOGAR";play.className="bracket-play-button";
     play.addEventListener("click",joinOnlineFinal);card.appendChild(play);
    }
@@ -1784,6 +1822,17 @@ document.getElementById("joinRoom").addEventListener("click",()=>{
  });
 });
 connectTournamentSocket();
+// ALTERADO AQUI - qualquer toque ou movimento real na gameplay renova a atividade; não há cronômetro visível.
+function onlineGameplayInteraction(event){
+ const screen=document.getElementById("matchScreen");
+ if(!screen||screen.style.display!=="flex"||gameMode!=="online")return;
+ if(event.type==="pointermove"&&event.buttons===0&&event.pointerType!=="touch")return;
+ sendOnlineActivity(event.type==="pointerdown"||event.type==="keydown");
+}
+document.addEventListener("pointerdown",onlineGameplayInteraction,{passive:true});
+document.addEventListener("pointermove",onlineGameplayInteraction,{passive:true});
+document.addEventListener("keydown",onlineGameplayInteraction);
+document.addEventListener("click",onlineGameplayInteraction,{passive:true});
 
 const canvas=document.getElementById("table"),ctx=canvas.getContext("2d");
 // ALTERADO AQUI - física calibrada para a área útil real da mesa e seis bocas de caçapa.
@@ -2004,8 +2053,8 @@ function setMatchType(type){
  else{startTurnClock();renderMatchClock();setStatus("Individual: cada jogador tem 30 segundos por turno.");}
 }
 function startTurnClock(){
- // ALTERADO AQUI - cada cobrança no modo TEMPO tem 20 segundos; no modo INDIVIDUAL mantém 30 segundos.
- turnSeconds=matchType==="competition"?20:30;renderTimer();renderMatchClock();
+ // ALTERADO AQUI - no online e no modo TEMPO, ambos os jogadores usam 20 segundos por turno; amistoso local mantém 30.
+ turnSeconds=(gameMode==="online"||matchType==="competition")?20:30;renderTimer();renderMatchClock();
 }
 function renderTimer(){
  const el=document.getElementById("timer");
@@ -2013,7 +2062,8 @@ function renderTimer(){
  // ALTERADO AQUI - cada lado possui sua própria barra; somente a barra de quem está na vez diminui.
  const bar1=document.getElementById("turnTimeBar1");
  const bar2=document.getElementById("turnTimeBar2");
- const tempoMode=matchType==="competition";
+ // ALTERADO AQUI - a barra de 20 segundos também aparece em partidas online no modo amistoso.
+ const tempoMode=matchType==="competition"||gameMode==="online";
  const remaining=Math.max(0,Math.min(20,turnSeconds));
  [bar1,bar2].forEach((bar,index)=>{
   if(!bar)return;
@@ -2079,7 +2129,8 @@ document.getElementById("stakeAmount").addEventListener("input",updateStake);
 loadProfiles();updateStake();
 turnClock=setInterval(()=>{
  if(gameOver)return;
- if(gameMode==="online"&&(!onlineMatchReady||onlinePlayerIndex!==currentPlayer))return;
+ // ALTERADO AQUI - os dois navegadores mantêm o cronômetro visível atualizado, inclusive durante a vez do adversário.
+ if(gameMode==="online"&&!onlineMatchReady)return;
  // ALTERADO AQUI - TEMPO mantém o relógio total pausado durante a tacada e também limita cada jogador a 20 segundos por cobrança.
  if(matchType==="competition"){
   if(!moving&&matchSeconds>0){matchSeconds--;renderMatchClock();}
@@ -2100,6 +2151,7 @@ turnClock=setInterval(()=>{
    setStatus("⏱️ 20 segundos esgotados! Vez de "+(profiles[currentPlayer].name||("Jogador "+(currentPlayer+1)))+".");
    startTurnClock();updateHUD();
    if(gameMode==="pc"&&currentPlayer===1)scheduleAI();
+   if(gameMode==="online")sendOnlineState(false);
   }
   return;
  }
@@ -2302,7 +2354,8 @@ function drawAim(){
   if(!cue?.active||gameOver||(!aiAnimating&&(moving||shotData))||(!aiAnimating&&breakShot&&ballInHand))return;
   const dx=aiAnimating?aiCueAnimation.dx:aimVector.x,dy=aiAnimating?aiCueAnimation.dy:aimVector.y,nx=-dy,ny=dx;
   // ALTERADO AQUI - guia de tacada efetiva no modo Contra Computador: projeta a linha até a primeira bola ou até a tabela.
-  if(!aiAnimating&&gameMode==="pc"&&playModeSettings.guide&&!moving&&!forceDragging){
+  // ALTERADO AQUI - a opção COM LINHA também funciona nas partidas online.
+  if(!aiAnimating&&(gameMode==="pc"||gameMode==="online")&&playModeSettings.guide&&!moving&&!forceDragging){
     const minX=TABLE_BOUNDS.left+cue.r,maxX=TABLE_BOUNDS.right-cue.r;
     const minY=TABLE_BOUNDS.top+cue.r,maxY=TABLE_BOUNDS.bottom-cue.r;
     let guideDistance=Infinity,guideTarget=null;
