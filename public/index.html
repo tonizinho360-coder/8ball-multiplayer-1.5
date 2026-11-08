@@ -1573,17 +1573,60 @@ button.secondary{background:#35483d}
   <div class="end-actions-buttons" id="matchEndButtons"></div>
  </div>
 </div>
-<script src="/socket.io/socket.io.js"></script>
+<!-- ALTERADO AQUI - carrega o cliente Socket.IO diretamente do servidor publicado. -->
+<script src="https://eightball-multiplayer-1-5.onrender.com/socket.io/socket.io.js"></script>
 <script>
 "use strict";
 
 // ALTERADO AQUI - conexão Socket.IO no mesmo domínio do servidor Node.js.
 let tournamentSocket=null;
 let tournamentSocketReady=false;
+// ALTERADO AQUI - estado da partida online do torneio FINAL.
+let onlineMatchId=null,onlinePlayerIndex=-1,onlineMatchNames=[],onlineMatchReady=false,onlineApplyingState=false;
+function isOnlineMyTurn(){return gameMode!=="online"||(onlineMatchReady&&onlinePlayerIndex===currentPlayer&&!gameOver);}
+function onlineSnapshot(){
+ return {balls:balls.map(b=>({...b})),currentPlayer,groups:[...groups],openTable,ballInHand,gameOver,shotCount,breakShot,pottedBy:pottedBy.map(a=>[...a]),pendingOpenTablePots:pendingOpenTablePots.map(a=>[...a]),matchSeconds,turnSeconds};
+}
+function sendOnlineState(initial=false){
+ if(gameMode!=="online"||!onlineMatchId||!tournamentSocket?.connected||onlineApplyingState)return;
+ tournamentSocket.emit("match:state",{matchId:onlineMatchId,initial,state:onlineSnapshot()},response=>{
+  if(response&&!response.ok&&response.error?.message)setStatus(response.error.message);
+ });
+}
+function applyOnlineState(state){
+ if(!state||!Array.isArray(state.balls))return;
+ onlineApplyingState=true;
+ balls=state.balls.map(b=>({...b}));
+ currentPlayer=Number(state.currentPlayer)===1?1:0;
+ groups=Array.isArray(state.groups)?[...state.groups]:[null,null];
+ openTable=!!state.openTable;ballInHand=!!state.ballInHand;gameOver=!!state.gameOver;
+ shotCount=Number(state.shotCount)||0;breakShot=!!state.breakShot;
+ pottedBy=Array.isArray(state.pottedBy)?state.pottedBy.map(a=>[...a]):[[],[]];
+ pendingOpenTablePots=Array.isArray(state.pendingOpenTablePots)?state.pendingOpenTablePots.map(a=>[...a]):[[],[]];
+ matchSeconds=Number(state.matchSeconds)||matchSeconds;turnSeconds=Number(state.turnSeconds)||30;
+ moving=false;aiming=false;pointer=null;shotData=null;forceDragging=false;cueDrag=null;
+ pocketAnims=[];balls.forEach(b=>{b.vx=0;b.vy=0;});
+ updateHUD();renderTimer();renderMatchClock();draw();
+ setStatus(gameOver?"Partida online encerrada.":"Estado sincronizado • vez de "+profiles[currentPlayer].name+".");
+ if(gameOver)showMatchEndActions();else startTurnClock();
+ onlineApplyingState=false;
+}
+function joinOnlineFinal(){
+ if(!tournamentRoom||!tournamentSocket?.connected){alert("Conecte-se novamente ao torneio antes de jogar.");return;}
+ tournamentSocket.emit("match:join",{code:tournamentRoom.code},response=>{
+  if(!response?.ok){tournamentAckError(response?.error||{message:"Não foi possível entrar na partida."});return;}
+  onlineMatchId=response.matchId;onlinePlayerIndex=response.slot;onlineMatchNames=response.players||[];
+  onlineMatchReady=!!response.ready;
+  setStatus("Entrando na partida online...");
+  if(response.state)applyOnlineState(response.state);
+  if(response.ready&&!document.getElementById("matchScreen").style.display.includes("flex"))startGame("online");
+ });
+}
 function connectTournamentSocket(){
  if(typeof io!=="function"){const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="Biblioteca Socket.IO não carregada. Abra pelo servidor Node.js.";return;}
  if(tournamentSocket)return tournamentSocket;
- tournamentSocket=io({transports:["websocket","polling"]});
+ // ALTERADO AQUI - conecta ao endereço público do servidor multiplayer no Render.
+ tournamentSocket=io("https://eightball-multiplayer-1-5.onrender.com",{transports:["websocket","polling"],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:5000});
  tournamentSocket.on("connect",()=>{tournamentSocketReady=true;const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="🟢 Conectado ao servidor multiplayer.";});
  tournamentSocket.on("disconnect",()=>{tournamentSocketReady=false;const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="🔴 Conexão perdida. Tentando reconectar...";});
  tournamentSocket.on("connect_error",()=>{const el=document.getElementById("tournamentConnectionStatus");if(el)el.textContent="Não foi possível conectar. Verifique se o servidor está iniciado.";});
@@ -1597,6 +1640,27 @@ function connectTournamentSocket(){
   tournamentRoom.players=data.players;
   tournamentRoom.bracket=data.bracket;
   renderBracket();showTournamentSubView("bracketView");
+ });
+ // ALTERADO AQUI - prepara os dois clientes para a mesma partida do torneio.
+ tournamentSocket.on("match:ready",data=>{
+  if(!data||!onlineMatchId||data.matchId!==onlineMatchId)return;
+  onlineMatchReady=true;onlineMatchNames=data.names||onlineMatchNames;
+  attach8BallChatSocket(tournamentSocket,onlineMatchId);
+  if(gameMode!=="online")startGame("online");
+ });
+ tournamentSocket.on("match:initialize-request",data=>{
+  if(!data||data.matchId!==onlineMatchId||onlinePlayerIndex!==0)return;
+  if(gameMode!=="online")startGame("online");
+  sendOnlineState(true);
+ });
+ tournamentSocket.on("match:state",state=>{
+  if(gameMode==="online"&&onlineMatchReady)applyOnlineState(state);
+ });
+ tournamentSocket.on("match:opponent-shot",data=>{
+  if(gameMode==="online"&&data&&data.slot!==onlinePlayerIndex)setStatus((data.name||"Adversário")+" está executando a tacada...");
+ });
+ tournamentSocket.on("match:presence",data=>{
+  if(gameMode==="online"&&data?.disconnectedSlot!==undefined)setStatus("O adversário perdeu a conexão. Aguardando retorno...");
  });
  tournamentSocket.on("tournament:error",message=>{alert(message);});
  return tournamentSocket;
@@ -1651,9 +1715,15 @@ function renderBracket(){
   round.matches.forEach((match,mi)=>{
    const card=document.createElement("div");card.className="bracket-match";
    const label=document.createElement("strong");label.textContent="PARTIDA "+(mi+1);
-   const a=document.createElement("span");a.className="versus";a.textContent="🎱 "+match.a;
-   const b=document.createElement("span");b.className="versus";b.textContent="VS "+match.b;
-   card.append(label,a,b);grid.appendChild(card);
+   const a=document.createElement("span");a.className="versus";a.textContent="🎱 "+(match.a?.name||match.a);
+   const b=document.createElement("span");b.className="versus";b.textContent="VS "+(match.b?.name||match.b);
+   card.append(label,a,b);
+   // ALTERADO AQUI - botão JOGAR disponível para os dois finalistas do torneio de 2 jogadores.
+   if(tournamentRoom.size===2&&ri===0&&match.a?.id&&match.b?.id){
+    const play=document.createElement("button");play.type="button";play.textContent="JOGAR";play.className="bracket-play-button";
+    play.addEventListener("click",joinOnlineFinal);card.appendChild(play);
+   }
+   grid.appendChild(card);
   });section.append(title,grid);host.appendChild(section);
  });
 }
@@ -1780,13 +1850,15 @@ function startGame(mode){
  // ALTERADO AQUI - aplica a configuração escolhida: TEMPO usa relógio total; INDIVIDUAL usa 30 s por tacada.
  matchType=playModeSettings.timeMode==="tempo"?"competition":"friendly";
  matchSeconds=Math.max(1,Number(playModeSettings.minutes)||10)*60;
- profiles[1]={name:mode==="pc"?"COMPUTADOR":"JOGADOR 2",photo:"",matches:0,wins:0};
+ profiles[1]={name:mode==="pc"?"COMPUTADOR":mode==="online"?(onlineMatchNames[1]||"JOGADOR 2"):"JOGADOR 2",photo:"",matches:0,wins:0};
+ if(mode==="online"){profiles[0]={...profiles[0],name:onlineMatchNames[0]||"JOGADOR 1"};profiles[1]={...profiles[1],name:onlineMatchNames[1]||"JOGADOR 2"};}
  document.getElementById("mainMenu").style.display="none";
  document.getElementById("tournamentInfo").style.display="none";
  document.getElementById("modeConfig").style.display="none";
  document.getElementById("matchScreen").style.display="flex";
- document.querySelector("#matchScreen header p").textContent=mode==="pc"?"MODO TREINAMENTO — VOCÊ vs PC":"MODO LOCAL — 2 JOGADORES";
- resetGame();
+ document.querySelector("#matchScreen header p").textContent=mode==="pc"?"MODO TREINAMENTO — VOCÊ vs PC":mode==="online"?"TORNEIO ONLINE — PARTIDA FINAL":"MODO LOCAL — 2 JOGADORES";
+ if(mode!=="online"||onlinePlayerIndex===0)resetGame();
+ else{balls=[];moving=false;gameOver=false;setStatus("Aguardando a mesa inicial do adversário...");}
  // ALTERADO AQUI - treinamento usa exclusivamente a mesa 2D superior no estilo Gamezer.
 }
 // ALTERADO AQUI - eventos do menu abrem as configurações específicas de cada modo.
@@ -1976,6 +2048,7 @@ document.getElementById("stakeAmount").addEventListener("input",updateStake);
 loadProfiles();updateStake();
 turnClock=setInterval(()=>{
  if(gameOver)return;
+ if(gameMode==="online"&&(!onlineMatchReady||onlinePlayerIndex!==currentPlayer))return;
  // ALTERADO AQUI - TEMPO mantém o relógio total pausado durante a tacada e também limita cada jogador a 20 segundos por cobrança.
  if(matchType==="competition"){
   if(!moving&&matchSeconds>0){matchSeconds--;renderMatchClock();}
@@ -1984,6 +2057,7 @@ turnClock=setInterval(()=>{
    const s1=pottedBy[0].length,s2=pottedBy[1].length;
    setStatus(s1===s2?"⏱️ Tempo encerrado! Empate.":"⏱️ Tempo encerrado! Vencedor: "+profiles[s1>s2?0:1].name);
    updateHUD();
+   if(gameMode==="online")sendOnlineState(false);
    showMatchEndActions();
    return;
   }
@@ -2006,6 +2080,7 @@ turnClock=setInterval(()=>{
   currentPlayer=1-currentPlayer;
   setStatus("⏱️ Tempo esgotado! Vez de "+(profiles[currentPlayer].name||("Jogador "+(currentPlayer+1)))+".");
   startTurnClock();updateHUD();
+  if(gameMode==="online")sendOnlineState(false);
   if(gameMode==="pc"&&currentPlayer===1)scheduleAI();
  }
 },1000);
@@ -2524,6 +2599,8 @@ function finishShot(){
   currentPlayer=1-player;setStatus("Nenhuma bola encaçapada. Vez do Jogador "+(currentPlayer+1)+".");
  }
  breakShot=false;shotData=null;startTurnClock();updateHUD();
+ // ALTERADO AQUI - publica bolas, placar, grupos e próximo turno ao servidor após a tacada terminar.
+ if(gameMode==="online")sendOnlineState(false);
  if(gameMode==="pc"&&currentPlayer===1&&!gameOver)scheduleAI();
 }
 // ALTERADO AQUI - exibe os botões de encerramento conforme o modo da partida.
@@ -2579,7 +2656,10 @@ function endGame(winner,reason){
   savePlayerStats();renderMenuStats();
  }
  try{localStorage.setItem("8ball_profiles",JSON.stringify([profiles[0]]));}catch(e){}
- renderProfiles();setStatus("🏆 "+profiles[winner].name+" venceu: "+reason);updateHUD();showMatchEndActions();
+ renderProfiles();setStatus("🏆 "+profiles[winner].name+" venceu: "+reason);updateHUD();
+ // ALTERADO AQUI - transmite também o resultado final para o outro finalista.
+ if(gameMode==="online")sendOnlineState(false);
+ showMatchEndActions();
 }
 // ALTERADO AQUI - IA simples: procura uma bola válida e tenta alinhá-la a uma caçapa
 function scheduleAI(){
@@ -2774,14 +2854,14 @@ let auxCuePointerId=null,auxCueStartY=0;
 function closeAuxCue(){if(gzAuxCuePanel)gzAuxCuePanel.hidden=true;if(gzTacoTrigger)gzTacoTrigger.setAttribute("aria-expanded","false");auxCuePointerId=null;}
 if(gzTacoTrigger&&gzAuxCuePanel){
  gzTacoTrigger.addEventListener("click",()=>{
-  if(moving||gameOver||ballInHand||(gameMode==="pc"&&currentPlayer===1)||!balls[0]?.active)return;
+  if(moving||gameOver||ballInHand||(gameMode==="pc"&&currentPlayer===1)||!isOnlineMyTurn()||!balls[0]?.active)return;
   gzAuxCuePanel.hidden=false;gzTacoTrigger.setAttribute("aria-expanded","true");updateForceUI(0);
  });
 }
 if(gzAuxCueClose)gzAuxCueClose.addEventListener("click",closeAuxCue);
 if(gzAuxCueTrack){
  gzAuxCueTrack.addEventListener("pointerdown",e=>{
-  if(moving||gameOver||ballInHand||(gameMode==="pc"&&currentPlayer===1)||!balls[0]?.active)return;
+  if(moving||gameOver||ballInHand||(gameMode==="pc"&&currentPlayer===1)||!isOnlineMyTurn()||!balls[0]?.active)return;
   auxCuePointerId=e.pointerId;auxCueStartY=e.clientY;forceDragging=true;cueDrag={startX:0,startY:0,pointerId:e.pointerId};
   gzAuxCueTrack.setPointerCapture(e.pointerId);updateForceUI(0);e.preventDefault();
  });
@@ -2842,7 +2922,7 @@ updateSpinUI();
 updateForceUI(0);
 
 canvas.addEventListener("pointerdown",e=>{
- if(moving||gameOver||(gameMode==="pc"&&currentPlayer===1))return;
+ if(moving||gameOver||(gameMode==="pc"&&currentPlayer===1)||!isOnlineMyTurn())return;
  // ALTERADO AQUI - não bloquear o gesto inicial; permitir rolagem vertical em paisagem.
  const p=canvasPoint(e),cue=balls[0];
  if(ballInHand){
@@ -2895,11 +2975,15 @@ canvas.addEventListener("pointermove",e=>{
  if(len>8){aimVector={x:dx/len,y:dy/len};}
 });
 function releaseCue(e){
- if(placingCue&&ballInHand){finishCuePlacement();return;}
+ if(!isOnlineMyTurn())return;
+ if(placingCue&&ballInHand){if(!isOnlineMyTurn())return;finishCuePlacement();return;}
  if(forceDragging&&cueDrag){
   forceDragging=false;cueDrag=null;
   const strength=shotForce;
   if(strength>=5&&!moving&&!gameOver&&balls[0]?.active){
+   if(gameMode==="online"&&tournamentSocket?.connected&&onlineMatchId){
+    tournamentSocket.emit("match:shot-start",{matchId:onlineMatchId,name:profiles[onlinePlayerIndex]?.name||"Jogador"});
+   }
    beginShot();
    // ALTERADO AQUI - após executar a tacada, esconde somente o taco auxiliar; o botão TACO permanece disponível.
    closeAuxCue();
@@ -2938,7 +3022,7 @@ const gamezerPowerTrack=document.getElementById("gamezerPowerTrack");
 if(gamezerPowerTrack){
  let powerPointerId=null,powerStartY=0;
  gamezerPowerTrack.addEventListener("pointerdown",e=>{
-  if(moving||gameOver||ballInHand||(gameMode==="pc"&&currentPlayer===1)||!balls[0]?.active)return;
+  if(moving||gameOver||ballInHand||(gameMode==="pc"&&currentPlayer===1)||!isOnlineMyTurn()||!balls[0]?.active)return;
   powerPointerId=e.pointerId;powerStartY=e.clientY;forceDragging=true;
   cueDrag={startX:0,startY:0,pointerId:e.pointerId};
   gamezerPowerTrack.setPointerCapture(e.pointerId);updateForceUI(0);e.preventDefault();
@@ -2957,6 +3041,7 @@ if(gamezerPowerTrack){
  gamezerPowerTrack.addEventListener("pointerup",finishPowerPointer);
  gamezerPowerTrack.addEventListener("pointercancel",finishPowerPointer);
  gamezerPowerTrack.addEventListener("keydown",e=>{
+  if(!isOnlineMyTurn())return;
   if(e.key==="ArrowUp"||e.key==="ArrowRight"){updateForceUI(Math.min(100,shotForce+5));e.preventDefault();}
   else if(e.key==="ArrowDown"||e.key==="ArrowLeft"){updateForceUI(Math.max(0,shotForce-5));e.preventDefault();}
   else if(e.key==="Enter"&&shotForce>=5){forceDragging=true;cueDrag={startX:0,startY:0,pointerId:-1};releaseCue({pointerId:-1});e.preventDefault();}
@@ -3018,14 +3103,17 @@ document.getElementById("chatForm").addEventListener("submit",e=>{
  const input=document.getElementById("chatInput"),message=input.value.trim();
  if(!message)return;
  if(matchChatSocket&&matchChatSocket.connected&&matchChatRoomId){
-  matchChatSocket.emit("match:chat",{roomId:matchChatRoomId,name:profiles[0].name,message});
+  matchChatSocket.emit("match:chat",{roomId:matchChatRoomId,name:profiles[onlinePlayerIndex>=0?onlinePlayerIndex:0].name,message});
  }else{
   appendMatchChatMessage(profiles[0].name,message,true);
  }
  input.value="";
 });
 
-document.getElementById("reset").addEventListener("click",resetGame);
+document.getElementById("reset").addEventListener("click",()=>{
+ if(gameMode==="online"){setStatus("A mesa do torneio não pode ser reiniciada por um único jogador.");return;}
+ resetGame();
+});
 document.getElementById("rules").addEventListener("click",()=>{
  alert("REGRAS DO MVP\\n\\n• Dois jogadores alternam as tacadas no mesmo dispositivo.\\n• A mesa começa aberta; a primeira bola lisa ou listrada encaçapada legalmente define os grupos.\\n• Depois de definido o grupo, a primeira bola atingida deve ser do seu grupo enquanto ainda houver bolas dele na mesa.\\n• Se encaçapar uma bola do seu grupo legalmente, continua jogando.\\n• Falta: encaçapar a branca, não acertar nenhuma bola ou não encaçapar/tocar a tabela após o contato.\\n• Após uma falta, o adversário recebe bola na mão e pode posicionar a branca.\\n• A bola 8 só pode ser encaçapada depois de limpar seu grupo. Encaçapar antes disso perde a partida.\\n• A saída com a bola 8 não perde automaticamente; neste protótipo ela volta ao centro.");
 });
