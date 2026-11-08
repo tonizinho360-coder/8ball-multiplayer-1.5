@@ -17,9 +17,24 @@ app.use(express.static(path.join(__dirname,'public')));
 function code(){ let value; do { value=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase(); } while(rooms.has(value)); return value; }
 function safeName(value){ const name=String(value || 'JOGADOR').trim().replace(/[<>]/g,'').slice(0,18); return name || 'JOGADOR'; }
 function publicRoom(room){ return { code:room.code, size:room.size, hostId:room.hostId, players:room.players.map(p=>({id:p.id,name:p.name})), started:room.started, bracket:room.bracket }; }
+// ALTERADO AQUI - mantém o socket atual ligado ao participante estável após reconexão.
+function rebindRoomPlayer(room,playerKey,socket){
+ if(!playerKey)return null;
+ const player=room.players.find(p=>p.playerKey===playerKey);
+ if(!player)return null;
+ const oldId=player.id;player.id=socket.id;socket.join(room.code);
+ if(room.hostId===oldId)room.hostId=socket.id;
+ const updateBracket=entry=>{
+  if(!entry||typeof entry!=="object")return;
+  if(entry.playerKey===playerKey)entry.id=socket.id;
+  Object.values(entry).forEach(value=>{if(Array.isArray(value))value.forEach(updateBracket);else if(value&&typeof value==="object")updateBracket(value);});
+ };
+ updateBracket(room.bracket);
+ return player;
+}
 function broadcast(room){ io.to(room.code).emit('tournament:room-update',publicRoom(room)); }
 function makeBracket(players){
- const shuffled=players.map(p=>({id:p.id,name:p.name}));
+ const shuffled=players.map(p=>({id:p.id,name:p.name,playerKey:p.playerKey||""}));
  for(let i=shuffled.length-1;i>0;i--){const j=crypto.randomInt(i+1);[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];}
  const rounds=[];let current=shuffled;let roundIndex=0;
  while(current.length>=2){
@@ -39,16 +54,21 @@ function getRoom(codeValue){return rooms.get(String(codeValue||'').trim().toUppe
 io.on('connection',socket=>{
  socket.on('tournament:create',(data={},ack)=>{
   const size=Number(data.size); if(!FORMATS.has(size))return replyError(ack,'Formato de torneio inválido.');
-  const roomCode=code();const room={code:roomCode,size,hostId:socket.id,players:[{id:socket.id,name:safeName(data.name)}],started:false,bracket:null};
+  const roomCode=code();const room={code:roomCode,size,hostId:socket.id,players:[{id:socket.id,name:safeName(data.name),playerKey:String(data.playerKey||"")}],started:false,bracket:null};
   rooms.set(roomCode,room);socket.join(roomCode);if(typeof ack==='function')ack({ok:true,room:publicRoom(room)});broadcast(room);
  });
  socket.on('tournament:join',(data={},ack)=>{
   const room=getRoom(data.code);if(!room)return replyError(ack,'Sala não encontrada. Confira o código.');
   const existing=room.players.find(p=>p.id===socket.id);
   if(existing){socket.join(room.code);if(typeof ack==='function')ack({ok:true,room:publicRoom(room)});return;}
-  if(room.started)return replyError(ack,'Este torneio já foi iniciado.');
+  if(room.started){
+   const rebound=rebindRoomPlayer(room,String(data.playerKey||""),socket);
+   if(!rebound)return replyError(ack,'Este torneio já foi iniciado ou este aparelho não pertence à sala.');
+   if(typeof ack==='function')ack({ok:true,room:publicRoom(room)});
+   broadcast(room);return;
+  }
   if(room.players.length>=room.size)return replyError(ack,'Esta sala já está cheia.');
-  room.players.push({id:socket.id,name:safeName(data.name)});socket.join(room.code);
+  room.players.push({id:socket.id,name:safeName(data.name),playerKey:String(data.playerKey||"")});socket.join(room.code);
   if(typeof ack==='function')ack({ok:true,room:publicRoom(room)});broadcast(room);
  });
  socket.on('tournament:start',(data={},ack)=>{
@@ -64,8 +84,12 @@ io.on('connection',socket=>{
   const room=getRoom(data.code);if(!room||!room.started)return replyError(ack,'Torneio não encontrado ou ainda não iniciado.');
   const finalMatch=room.bracket?.[0]?.matches?.[0];
   if(room.size!==2||!finalMatch||!finalMatch.a?.id||!finalMatch.b?.id)return replyError(ack,'A partida online automática está disponível nesta etapa para o torneio FINAL com 2 jogadores.');
-  const slot=finalMatch.a.id===socket.id?0:finalMatch.b.id===socket.id?1:-1;
+  const playerKey=String(data.playerKey||"");
+  const slot=finalMatch.a.id===socket.id||!!playerKey&&finalMatch.a.playerKey===playerKey?0:finalMatch.b.id===socket.id||!!playerKey&&finalMatch.b.playerKey===playerKey?1:-1;
   if(slot<0)return replyError(ack,'Somente os finalistas podem entrar nesta partida.');
+  // ALTERADO AQUI - atualiza o socket do finalista quando ele retorna pelo mesmo aparelho.
+  const roomPlayer=room.players.find(p=>p.playerKey&&p.playerKey===playerKey);
+  if(roomPlayer&&roomPlayer.id!==socket.id){const oldId=roomPlayer.id;roomPlayer.id=socket.id;if(room.hostId===oldId)room.hostId=socket.id;finalMatch[slot===0?'a':'b'].id=socket.id;}
   const matchId=room.code+':'+finalMatch.matchId;
   let match=matches.get(matchId);
   if(!match){match={id:matchId,code:room.code,players:[null,null],state:null,currentPlayer:0,started:false,ended:false};matches.set(matchId,match);}
@@ -93,6 +117,18 @@ io.on('connection',socket=>{
    return replyError(ack,'Posições ou velocidades da tacada inválidas.');
   io.to(match.id).emit('match:opponent-shot',{slot,name:safeName(data.name)});
   io.to(match.id).emit('match:shot-motion',{slot,state:motionState});
+  if(typeof ack==='function')ack({ok:true});
+ });
+ // ALTERADO AQUI - retransmite snapshots durante a tacada sem alterar o estado final salvo no servidor.
+ socket.on('match:shot-motion',(data={},ack)=>{
+  const match=matches.get(String(data.matchId||''));
+  if(!match||!match.started||match.ended)return replyError(ack,'Partida online indisponível.');
+  const slot=match.players.indexOf(socket.id);
+  if(slot<0||slot!==match.currentPlayer)return replyError(ack,'Tacada fora da vez.');
+  const motionState=data.state;
+  if(!motionState||!Array.isArray(motionState.balls)||motionState.balls.length>16)return replyError(ack,'Dados do movimento inválidos.');
+  if(!motionState.balls.every(ball=>Number.isFinite(ball.x)&&Number.isFinite(ball.y)&&Number.isFinite(ball.vx)&&Number.isFinite(ball.vy)))return replyError(ack,'Posições ou velocidades inválidas.');
+  socket.to(match.id).emit('match:shot-motion',{slot,state:motionState});
   if(typeof ack==='function')ack({ok:true});
  });
  // ALTERADO AQUI - recebe e replica o estado completo da mesa ao terminar cada tacada.
