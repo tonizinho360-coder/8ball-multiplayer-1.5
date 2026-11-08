@@ -1583,6 +1583,14 @@ let tournamentSocket=null;
 let tournamentSocketReady=false;
 // ALTERADO AQUI - estado da partida online do torneio FINAL.
 let onlineMatchId=null,onlinePlayerIndex=-1,onlineMatchNames=[],onlineMatchReady=false,onlineApplyingState=false;
+let lastOnlineMotionAt=0;
+// ALTERADO AQUI - identifica o participante mesmo quando o navegador reconecta com outro socket.id.
+function tournamentPlayerKey(){
+ const keyName="eightballTournamentPlayerKey";
+ let key=localStorage.getItem(keyName);
+ if(!key){key="P"+Array.from(crypto.getRandomValues(new Uint8Array(16))).map(v=>v.toString(16).padStart(2,"0")).join("");localStorage.setItem(keyName,key);}
+ return key;
+}
 function isOnlineMyTurn(){return gameMode!=="online"||(onlineMatchReady&&onlinePlayerIndex===currentPlayer&&!gameOver);}
 function onlineSnapshot(){
  return {balls:balls.map(b=>({...b})),currentPlayer,groups:[...groups],openTable,ballInHand,gameOver,shotCount,breakShot,pottedBy:pottedBy.map(a=>[...a]),pendingOpenTablePots:pendingOpenTablePots.map(a=>[...a]),matchSeconds,turnSeconds};
@@ -1597,6 +1605,7 @@ function sendOnlineState(initial=false){
 function applyOnlineMotion(state){
  if(!state||!Array.isArray(state.balls))return;
  onlineApplyingState=true;
+ const firstMotion=!moving;
  balls=state.balls.map(b=>({...b,pocketing:b.pocketing?{...b.pocketing}:null}));
  currentPlayer=Number(state.currentPlayer)===1?1:0;
  groups=Array.isArray(state.groups)?[...state.groups]:[null,null];
@@ -1604,9 +1613,9 @@ function applyOnlineMotion(state){
  shotCount=Number(state.shotCount)||0;breakShot=!!state.breakShot;
  pottedBy=Array.isArray(state.pottedBy)?state.pottedBy.map(a=>[...a]):[[],[]];
  pendingOpenTablePots=Array.isArray(state.pendingOpenTablePots)?state.pendingOpenTablePots.map(a=>[...a]):[[],[]];
- shotData=state.shotData?JSON.parse(JSON.stringify(state.shotData)):null;
- moving=true;aiming=false;pointer=null;forceDragging=false;cueDrag=null;placingCue=false;
- shotElapsedMs=0;motionQuietFrames=0;physicsAccumulator=0;pocketAnims=[];
+ if(state.shotData)shotData=JSON.parse(JSON.stringify(state.shotData));
+ moving=state.moving!==false;aiming=false;pointer=null;forceDragging=false;cueDrag=null;placingCue=false;
+ if(firstMotion){shotElapsedMs=0;motionQuietFrames=0;physicsAccumulator=0;}
  updateHUD();renderTimer();renderMatchClock();draw();
  setStatus("Tacada do adversário em andamento...");
  onlineApplyingState=false;
@@ -1631,7 +1640,7 @@ function applyOnlineState(state){
 }
 function joinOnlineFinal(){
  if(!tournamentRoom||!tournamentSocket?.connected){alert("Conecte-se novamente ao torneio antes de jogar.");return;}
- tournamentSocket.emit("match:join",{code:tournamentRoom.code},response=>{
+ tournamentSocket.emit("match:join",{code:tournamentRoom.code,playerKey:tournamentPlayerKey()},response=>{
   if(!response?.ok){tournamentAckError(response?.error||{message:"Não foi possível entrar na partida."});return;}
   onlineMatchId=response.matchId;onlinePlayerIndex=response.slot;onlineMatchNames=response.players||[];
   onlineMatchReady=!!response.ready;
@@ -1716,7 +1725,7 @@ function tournamentAckError(error){if(error?.message)alert(error.message);}
 function createTournamentRoom(){
  const socket=connectTournamentSocket();
  if(!socket||!socket.connected){alert("Aguardando conexão com o servidor. Tente novamente em alguns segundos.");return;}
- socket.emit("tournament:create",{size:selectedTournamentSize,name:profiles[0].name||"CRIADOR"},response=>{
+  socket.emit("tournament:create",{size:selectedTournamentSize,name:profiles[0].name||"CRIADOR",playerKey:tournamentPlayerKey()},response=>{
   if(!response?.ok){tournamentAckError(response?.error||{message:"Não foi possível criar o torneio."});return;}
   tournamentRoom={...response.room,isCreator:true};renderRoom();showTournamentSubView("roomView");
  });
@@ -1769,7 +1778,7 @@ document.getElementById("bracketBack").addEventListener("click",()=>showTourname
 document.getElementById("joinRoom").addEventListener("click",()=>{
  const entered=document.getElementById("joinCodeInput").value.trim().toUpperCase();if(!entered){alert("Digite o código da sala.");return;}
  const socket=connectTournamentSocket();if(!socket||!socket.connected){alert("Aguardando conexão com o servidor. Tente novamente em alguns segundos.");return;}
- socket.emit("tournament:join",{code:entered,name:profiles[0].name||"PARTICIPANTE"},response=>{
+ socket.emit("tournament:join",{code:entered,name:profiles[0].name||"PARTICIPANTE",playerKey:tournamentPlayerKey()},response=>{
   if(!response?.ok){tournamentAckError(response?.error||{message:"Não foi possível entrar na sala."});return;}
   tournamentRoom={...response.room,isCreator:response.room.hostId===socket.id};renderRoom();showTournamentSubView("roomView");
  });
@@ -2815,6 +2824,11 @@ function animate(timestamp){
    updatePhysics();
    physicsAccumulator-=16;
    steps++;
+  }
+  // ALTERADO AQUI - envia snapshots frequentes da tacada para o adversário acompanhar o movimento em tempo real.
+  if(gameMode==="online"&&onlineMatchReady&&onlineMatchId&&onlinePlayerIndex===currentPlayer&&tournamentSocket?.connected&&!onlineApplyingState&&timestamp-lastOnlineMotionAt>=70){
+   lastOnlineMotionAt=timestamp;
+   tournamentSocket.emit("match:shot-motion",{matchId:onlineMatchId,state:{...onlineSnapshot(),shotData:shotData?JSON.parse(JSON.stringify(shotData)):null,moving:true}});
   }
  }
  // ALTERADO AQUI - monitora o repouso mesmo depois que a velocidade cai abaixo do limite físico.
