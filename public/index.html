@@ -1593,6 +1593,24 @@ function sendOnlineState(initial=false){
   if(response&&!response.ok&&response.error?.message)setStatus(response.error.message);
  });
 }
+// ALTERADO AQUI - recebe a tacada em andamento e inicia a mesma simulação no navegador adversário.
+function applyOnlineMotion(state){
+ if(!state||!Array.isArray(state.balls))return;
+ onlineApplyingState=true;
+ balls=state.balls.map(b=>({...b,pocketing:b.pocketing?{...b.pocketing}:null}));
+ currentPlayer=Number(state.currentPlayer)===1?1:0;
+ groups=Array.isArray(state.groups)?[...state.groups]:[null,null];
+ openTable=!!state.openTable;ballInHand=!!state.ballInHand;gameOver=!!state.gameOver;
+ shotCount=Number(state.shotCount)||0;breakShot=!!state.breakShot;
+ pottedBy=Array.isArray(state.pottedBy)?state.pottedBy.map(a=>[...a]):[[],[]];
+ pendingOpenTablePots=Array.isArray(state.pendingOpenTablePots)?state.pendingOpenTablePots.map(a=>[...a]):[[],[]];
+ shotData=state.shotData?JSON.parse(JSON.stringify(state.shotData)):null;
+ moving=true;aiming=false;pointer=null;forceDragging=false;cueDrag=null;placingCue=false;
+ shotElapsedMs=0;motionQuietFrames=0;physicsAccumulator=0;pocketAnims=[];
+ updateHUD();renderTimer();renderMatchClock();draw();
+ setStatus("Tacada do adversário em andamento...");
+ onlineApplyingState=false;
+}
 function applyOnlineState(state){
  if(!state||!Array.isArray(state.balls))return;
  onlineApplyingState=true;
@@ -1655,6 +1673,10 @@ function connectTournamentSocket(){
  });
  tournamentSocket.on("match:state",state=>{
   if(gameMode==="online"&&onlineMatchReady)applyOnlineState(state);
+ });
+ // ALTERADO AQUI - o adversário recebe a tacada no início e acompanha a física enquanto ela acontece.
+ tournamentSocket.on("match:shot-motion",data=>{
+  if(gameMode==="online"&&data&&data.slot!==onlinePlayerIndex)applyOnlineMotion(data.state);
  });
  tournamentSocket.on("match:opponent-shot",data=>{
   if(gameMode==="online"&&data&&data.slot!==onlinePlayerIndex)setStatus((data.name||"Adversário")+" está executando a tacada...");
@@ -2981,9 +3003,6 @@ function releaseCue(e){
   forceDragging=false;cueDrag=null;
   const strength=shotForce;
   if(strength>=5&&!moving&&!gameOver&&balls[0]?.active){
-   if(gameMode==="online"&&tournamentSocket?.connected&&onlineMatchId){
-    tournamentSocket.emit("match:shot-start",{matchId:onlineMatchId,name:profiles[onlinePlayerIndex]?.name||"Jogador"});
-   }
    beginShot();
    // ALTERADO AQUI - após executar a tacada, esconde somente o taco auxiliar; o botão TACO permanece disponível.
    closeAuxCue();
@@ -3006,6 +3025,13 @@ function releaseCue(e){
    cue.angularVelocity= Math.hypot(cue.topSpin,cue.sideSpin);
    cue.lastCueContact={x:contactX,y:contactY};
    moving=true;shotCount++;
+   // ALTERADO AQUI - transmite a mesa já com as velocidades iniciais, para o outro jogador iniciar a tacada no mesmo instante.
+   if(gameMode==="online"&&tournamentSocket?.connected&&onlineMatchId){
+    const motionState={...onlineSnapshot(),shotData:JSON.parse(JSON.stringify(shotData)),moving:true};
+    tournamentSocket.emit("match:shot-start",{matchId:onlineMatchId,name:profiles[onlinePlayerIndex]?.name||"Jogador",state:motionState},response=>{
+     if(response&&!response.ok&&response.error?.message)setStatus(response.error.message);
+    });
+   }
    draw();
    setStatus("Tacada "+shotCount+" — força "+Math.round(strength)+"%. Aguardando as bolas pararem.");
   }else setStatus("Puxe o taco para trás e solte para executar a tacada.");
