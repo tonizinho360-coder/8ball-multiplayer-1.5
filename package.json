@@ -1,0 +1,17 @@
+{
+  "name": "8ball-tournament-multiplayer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Servidor Socket.IO para salas e lobby de torneios 8 Ball Tournament",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
