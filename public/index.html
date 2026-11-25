@@ -1911,7 +1911,7 @@ function tournamentPlayerKey(){
  return key;
 }
 function publicPlayerStats(){
- const keys=["tournamentWins","tournamentLosses","wins1v1","losses1v1","draws1v1","oneOnOneBallsFor","oneOnOneBallsAgainst","streak1v1","first","second","third","leagueFirst","leagueSecond","leagueThird","leagueWins","leagueLosses","leagueDraws","leagueBallsFor","leagueBallsAgainst","tournamentBallsFor","tournamentBallsAgainst","streak","ballsFor","ballsAgainst"];
+ const keys=["tournamentWins","tournamentLosses","tournamentMatchWins","tournamentMatchLosses","leagueRelegated","wins1v1","losses1v1","draws1v1","oneOnOneBallsFor","oneOnOneBallsAgainst","streak1v1","first","second","third","leagueFirst","leagueSecond","leagueThird","leagueWins","leagueLosses","leagueDraws","leagueBallsFor","leagueBallsAgainst","tournamentBallsFor","tournamentBallsAgainst","streak","ballsFor","ballsAgainst"];
  const result={};keys.forEach(key=>{const value=Number(playerStats?.[key]);result[key]=Number.isFinite(value)&&value>=0?Math.floor(value):0;});
  return result;
 }
@@ -2293,7 +2293,7 @@ let shotElapsedMs=0,motionQuietFrames=0;
 let pocketAnims=[];
 let gameMode="pc",aiTimer=null,aiCueAnimation=null; // ALTERADO AQUI - estado temporário para animar a preparação e o contato do taco da IA.
 // ALTERADO AQUI - estatísticas independentes do modo 1X1.
-let playerStats={coins:1000,cash:0,tournamentWins:0,tournamentLosses:0,wins1v1:0,losses1v1:0,draws1v1:0,oneOnOneBallsFor:0,oneOnOneBallsAgainst:0,streak1v1:0,first:0,second:0,third:0,leagueFirst:0,leagueSecond:0,leagueThird:0,leagueWins:0,leagueLosses:0,leagueDraws:0,leagueBallsFor:0,leagueBallsAgainst:0,tournamentBallsFor:0,tournamentBallsAgainst:0,streak:0,ballsFor:0,ballsAgainst:0};
+let playerStats={coins:1000,cash:0,tournamentWins:0,tournamentLosses:0,tournamentMatchWins:0,tournamentMatchLosses:0,leagueRelegated:0,wins1v1:0,losses1v1:0,draws1v1:0,oneOnOneBallsFor:0,oneOnOneBallsAgainst:0,streak1v1:0,first:0,second:0,third:0,leagueFirst:0,leagueSecond:0,leagueThird:0,leagueWins:0,leagueLosses:0,leagueDraws:0,leagueBallsFor:0,leagueBallsAgainst:0,tournamentBallsFor:0,tournamentBallsAgainst:0,streak:0,ballsFor:0,ballsAgainst:0};
 let selectedStatsTab="1x1";
 let profiles=[
  {name:"JOGADOR 1",photo:"",matches:0,wins:0},
@@ -2301,8 +2301,18 @@ let profiles=[
 ];
 
 // ALTERADO AQUI - navegação do menu, perfil persistente e início do modo contra PC
+// ALTERADO AQUI - estatísticas limpas obrigatoriamente na nova versão-base, sem apagar moedas/saldo nem identidade.
+const CLEAN_STATS_RELEASE="2026-11-25-base-clean-02";
 function loadPlayerStats(){
- try{const saved=JSON.parse(localStorage.getItem("8ball_player_stats")||"null");if(saved)playerStats={...playerStats,...saved};}catch(e){}
+ try{
+  const saved=JSON.parse(localStorage.getItem("8ball_player_stats")||"null");if(saved)playerStats={...playerStats,...saved};
+  if(localStorage.getItem("8ball_stats_clean_release")!==CLEAN_STATS_RELEASE){
+   const competitiveKeys=["tournamentWins","tournamentLosses","tournamentMatchWins","tournamentMatchLosses","leagueRelegated","wins1v1","losses1v1","draws1v1","oneOnOneBallsFor","oneOnOneBallsAgainst","streak1v1","first","second","third","leagueFirst","leagueSecond","leagueThird","leagueWins","leagueLosses","leagueDraws","leagueBallsFor","leagueBallsAgainst","tournamentBallsFor","tournamentBallsAgainst","streak","ballsFor","ballsAgainst"];
+   competitiveKeys.forEach(key=>playerStats[key]=0);
+   localStorage.setItem("8ball_player_stats",JSON.stringify(playerStats));
+   localStorage.setItem("8ball_stats_clean_release",CLEAN_STATS_RELEASE);
+  }
+ }catch(e){}
  renderMenuStats();
 }
 function savePlayerStats(){try{localStorage.setItem("8ball_player_stats",JSON.stringify(playerStats));}catch(e){}}
@@ -2316,12 +2326,12 @@ function renderMenuStats(){
  if(selectedStatsTab==="1x1") html=section("DESEMPENHO • 1X1",[
   tile("✅",n("wins1v1"),"Vitórias 1X1"),tile("❌",n("losses1v1"),"Derrotas 1X1"),tile("↔️",n("draws1v1"),"Empates 1X1"),tile("🎯",n("oneOnOneBallsFor"),"Encaçapadas a favor"),tile("🤦🏽‍♂️",n("oneOnOneBallsAgainst"),"Encaçapadas contra"),tile("🔥",n("streak1v1"),"Jogos sem perder")]);
  else if(selectedStatsTab==="tournament") html=section("TORNEIO ONLINE",[
-  tile("🏆",n("tournamentWins"),"Campeão"),tile("🥈",n("tournamentLosses"),"Vice-campeão"),tile("🎯",n("tournamentBallsFor"),"Encaçapadas a favor"),tile("🤦🏽‍♂️",n("tournamentBallsAgainst"),"Encaçapadas contra")]);
+  tile("🏆",n("tournamentWins"),"Campeão"),tile("🥈",n("tournamentLosses"),"Vice-campeão"),tile("✅",n("tournamentMatchWins"),"Vitórias"),tile("❌",n("tournamentMatchLosses"),"Derrotas"),tile("🎯",n("tournamentBallsFor"),"Encaçapadas a favor"),tile("🤦🏽‍♂️",n("tournamentBallsAgainst"),"Encaçapadas contra")]);
  else if(selectedStatsTab==="league") html=section("DESEMPENHO • LIGA",[
   tile("✅",n("leagueWins"),"Vitórias"),tile("❌",n("leagueLosses"),"Derrotas"),tile("↔️",n("leagueDraws"),"Empates"),tile("🎯",n("leagueBallsFor"),"Encaçapadas a favor"),tile("🤦🏽‍♂️",n("leagueBallsAgainst"),"Encaçapadas contra")])+
-  `<div class="stats-section-title">PÓDIO DAS LIGAS</div><div class="stats-grid">${tile("🥇",n("leagueFirst"),"Campeão")}${tile("🥈",n("leagueSecond"),"Vice-campeão")}${tile("🥉",n("leagueThird"),"Terceiro lugar")}</div>`;
+  `<div class="stats-section-title">PÓDIO DAS LIGAS</div><div class="stats-grid">${tile("🥇",n("leagueFirst"),"Campeão")}${tile("🥈",n("leagueSecond"),"Vice-campeão")}${tile("🥉",n("leagueThird"),"Terceiro lugar")}${tile("👎🏽",n("leagueRelegated"),"Rebaixado")}</div>`;
  else html=section("RESUMO GERAL • TODAS AS MODALIDADES",[
-  tile("✅",n("wins1v1")+n("tournamentWins")+n("leagueWins"),"Vitórias totais"),tile("❌",n("losses1v1")+n("tournamentLosses")+n("leagueLosses"),"Derrotas totais"),tile("↔️",n("draws1v1")+n("leagueDraws"),"Empates totais"),tile("🎯",n("oneOnOneBallsFor")+n("tournamentBallsFor")+n("leagueBallsFor"),"Encaçapadas a favor"),tile("🤦🏽‍♂️",n("oneOnOneBallsAgainst")+n("tournamentBallsAgainst")+n("leagueBallsAgainst"),"Encaçapadas contra"),tile("🏆",n("first")+n("leagueFirst"),"Títulos conquistados"),tile("🥈",n("second")+n("leagueSecond"),"Vice-campeonatos"),tile("🥉",n("leagueThird"),"Terceiros lugares"),tile("🔥",n("streak1v1")+n("streak"),"Sequências atuais")]);
+  tile("✅",n("wins1v1")+n("tournamentMatchWins")+n("leagueWins"),"Vitórias totais"),tile("❌",n("losses1v1")+n("tournamentMatchLosses")+n("leagueLosses"),"Derrotas totais"),tile("↔️",n("draws1v1")+n("leagueDraws"),"Empates totais"),tile("🎯",n("oneOnOneBallsFor")+n("tournamentBallsFor")+n("leagueBallsFor"),"Encaçapadas a favor"),tile("🤦🏽‍♂️",n("oneOnOneBallsAgainst")+n("tournamentBallsAgainst")+n("leagueBallsAgainst"),"Encaçapadas contra"),tile("🏆",n("first")+n("leagueFirst"),"Títulos (Torneio + Liga)"),tile("🥈",n("second")+n("leagueSecond"),"Vices (Torneio + Liga)"),tile("🥉",n("leagueThird"),"3º lugar em Liga"),tile("🔥",n("streak1v1")+n("streak"),"Sequências atuais")]);
  content.innerHTML=html;
  document.querySelectorAll("[data-stats-tab]").forEach(button=>{const active=button.dataset.statsTab===selectedStatsTab;button.classList.toggle("active",active);button.setAttribute("aria-selected",String(active));});
 }
@@ -2852,6 +2862,12 @@ function loadProfiles(){
  try{
   const saved=localStorage.getItem("8ball_profiles");
   if(saved){const data=JSON.parse(saved);if(Array.isArray(data)&&data.length>=1)profiles[0]=data[0];}
+  // ALTERADO AQUI - zera contadores de perfil de teste uma única vez nesta versão; nomes e fotos são preservados.
+  if(localStorage.getItem("8ball_profile_clean_release")!==CLEAN_STATS_RELEASE){
+   profiles.forEach(profile=>{profile.matches=0;profile.wins=0;});
+   localStorage.setItem("8ball_profiles",JSON.stringify(profiles));
+   localStorage.setItem("8ball_profile_clean_release",CLEAN_STATS_RELEASE);
+  }
  }catch(e){}
  document.getElementById("profileName1").value=profiles[0].name;
  document.getElementById("profileName2").value=profiles[1].name;
