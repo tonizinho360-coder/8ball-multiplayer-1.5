@@ -21,15 +21,10 @@ jobs:
           java-version: '17'
 
       - name: Configurar Android SDK
-        run: |
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          sdkmanager --version
-
-      - name: Instalar ferramentas Android
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12266719
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Criar projeto Android
         run: |
@@ -87,18 +82,22 @@ jobs:
           cat > android/app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
+
               <application
                   android:label="Bilhar dos MANOS"
                   android:theme="@android:style/Theme.Material.Light.NoActionBar"
                   android:usesCleartextTraffic="false">
+
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
                       android:screenOrientation="unspecified">
+
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
+
                   </activity>
               </application>
           </manifest>
@@ -120,18 +119,25 @@ jobs:
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+                  getWindow().addFlags(
+                      WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                  );
 
                   webView = new WebView(this);
                   webView.getSettings().setJavaScriptEnabled(true);
                   webView.getSettings().setDomStorageEnabled(true);
                   webView.getSettings().setDatabaseEnabled(true);
                   webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
+
                   webView.setWebViewClient(new WebViewClient());
                   webView.setWebChromeClient(new WebChromeClient());
 
                   setContentView(webView);
-                  webView.loadUrl("https://eightball-multiplayer-1-5.onrender.com");
+
+                  webView.loadUrl(
+                      "https://eightball-multiplayer-1-5.onrender.com"
+                  );
               }
 
               @Override
