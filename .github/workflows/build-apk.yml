@@ -9,67 +9,59 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Baixar o projeto
         uses: actions/checkout@v4
 
-      - name: Configurar Java
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 12266710
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Configurar Android SDK do runner
+        run: |
+          set -e
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
+          SDKMANAGER=$(find "${ANDROID_HOME}" -type f -name sdkmanager | head -n 1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERRO: sdkmanager não foi encontrado no Android SDK do runner."
+            exit 1
+          fi
+          SDKMANAGER_DIR=$(dirname "$SDKMANAGER")
+          echo "$SDKMANAGER_DIR" >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --licenses || true
+          "$SDKMANAGER" --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Criar projeto Android
         run: |
+          set -e
           mkdir -p android/app/src/main/java/com/bilharmanos/app
-          mkdir -p android/app/src/main/res
-
-          cat > android/settings.gradle <<'EOF'
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
+          cat > android/settings.gradle <<'GRADLE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
+              repositories { google(); mavenCentral() }
           }
           rootProject.name = "BilharDosManos"
           include ':app'
-          EOF
+          GRADLE
 
-          cat > android/build.gradle <<'EOF'
-          plugins {
-              id 'com.android.application' version '8.5.2' apply false
-          }
-          EOF
+          cat > android/build.gradle <<'GRADLE'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          GRADLE
 
-          cat > android/gradle.properties <<'EOF'
+          cat > android/gradle.properties <<'GRADLE'
           org.gradle.jvmargs=-Xmx2048m
           android.useAndroidX=true
-          EOF
+          GRADLE
 
-          cat > android/app/build.gradle <<'EOF'
-          plugins {
-              id 'com.android.application'
-          }
-
+          cat > android/app/build.gradle <<'GRADLE'
+          plugins { id 'com.android.application' }
           android {
               namespace 'com.bilharmanos.app'
               compileSdk 35
-
               defaultConfig {
                   applicationId 'com.bilharmanos.app'
                   minSdk 23
@@ -78,21 +70,17 @@ jobs:
                   versionName '1.0'
               }
           }
-          EOF
+          GRADLE
 
-          cat > android/app/src/main/AndroidManifest.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
+          cat > android/app/src/main/AndroidManifest.xml <<'XML'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
               <application
                   android:label="Bilhar dos MANOS"
-                  android:icon="@mipmap/ic_launcher"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
                   android:usesCleartextTraffic="false"
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
-                  <activity
-                      android:name="com.bilharmanos.app.MainActivity"
-                      android:exported="true"
-                      android:screenOrientation="unspecified">
+                  android:icon="@mipmap/ic_launcher">
+                  <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -100,9 +88,9 @@ jobs:
                   </activity>
               </application>
           </manifest>
-          EOF
+          XML
 
-          cat > android/app/src/main/java/com/bilharmanos/app/MainActivity.java <<'EOF'
+          cat > android/app/src/main/java/com/bilharmanos/app/MainActivity.java <<'JAVA'
           package com.bilharmanos.app;
 
           import android.app.Activity;
@@ -117,21 +105,18 @@ jobs:
               private WebView webView;
 
               @Override
-              protected void onCreate(Bundle savedInstanceState) {
+              public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-
                   webView = new WebView(this);
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
                   settings.setDatabaseEnabled(true);
                   settings.setMediaPlaybackRequiresUserGesture(false);
-
                   webView.setWebViewClient(new WebViewClient());
                   webView.setWebChromeClient(new WebChromeClient());
                   setContentView(webView);
-
                   if (savedInstanceState != null) {
                       webView.restoreState(savedInstanceState);
                   } else {
@@ -154,36 +139,34 @@ jobs:
                   }
               }
           }
-          EOF
+          JAVA
 
       - name: Configurar ícone do Bilhar dos MANOS
         run: |
+          set -e
           if [ ! -f bilhar_dos_manos_icon_512.png ]; then
             echo "ERRO: bilhar_dos_manos_icon_512.png não foi encontrado na raiz do repositório."
             exit 1
           fi
-
+          python3 -m pip install --quiet Pillow
           python3 - <<'PY'
           from PIL import Image
           import os
-
-          source = Image.open("bilhar_dos_manos_icon_512.png").convert("RGBA")
+          image = Image.open('bilhar_dos_manos_icon_512.png').convert('RGBA')
           sizes = {
-              "mipmap-mdpi": 48,
-              "mipmap-hdpi": 72,
-              "mipmap-xhdpi": 96,
-              "mipmap-xxhdpi": 144,
-              "mipmap-xxxhdpi": 192,
+              'mipmap-mdpi': 48,
+              'mipmap-hdpi': 72,
+              'mipmap-xhdpi': 96,
+              'mipmap-xxhdpi': 144,
+              'mipmap-xxxhdpi': 192,
           }
           for folder, size in sizes.items():
-              path = f"android/app/src/main/res/{folder}"
+              path = f'android/app/src/main/res/{folder}'
               os.makedirs(path, exist_ok=True)
-              source.resize((size, size), Image.Resampling.LANCZOS).save(
-                  f"{path}/ic_launcher.png"
-              )
+              image.resize((size, size), Image.Resampling.LANCZOS).save(f'{path}/ic_launcher.png')
           PY
 
-      - name: Configurar Gradle
+      - name: Configurar Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
@@ -193,10 +176,18 @@ jobs:
 
       - name: Preparar APK
         run: |
+          set -e
           mkdir -p release
           cp android/app/build/outputs/apk/debug/app-debug.apk release/Bilhar-dos-MANOS.apk
 
-      - name: Publicar APK para download
+      - name: Disponibilizar APK para download (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bilhar-dos-MANOS-APK
+          path: release/Bilhar-dos-MANOS.apk
+          retention-days: 30
+
+      - name: Publicar APK em Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
