@@ -23,12 +23,13 @@ jobs:
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: 12266719
+          cmdline-tools-version: 12266710
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Criar projeto Android
         run: |
           mkdir -p android/app/src/main/java/com/bilharmanos/app
+          mkdir -p android/app/src/main/res
 
           cat > android/settings.gradle <<'EOF'
           pluginManagement {
@@ -80,24 +81,22 @@ jobs:
           EOF
 
           cat > android/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET"/>
-
+              <uses-permission android:name="android.permission.INTERNET" />
               <application
                   android:label="Bilhar dos MANOS"
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
-                  android:usesCleartextTraffic="false">
-
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="false"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
                   <activity
-                      android:name=".MainActivity"
+                      android:name="com.bilharmanos.app.MainActivity"
                       android:exported="true"
                       android:screenOrientation="unspecified">
-
                       <intent-filter>
-                          <action android:name="android.intent.action.MAIN"/>
-                          <category android:name="android.intent.category.LAUNCHER"/>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
-
                   </activity>
               </application>
           </manifest>
@@ -108,36 +107,42 @@ jobs:
 
           import android.app.Activity;
           import android.os.Bundle;
+          import android.view.WindowManager;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
           import android.webkit.WebChromeClient;
-          import android.view.WindowManager;
+          import android.webkit.WebSettings;
 
           public class MainActivity extends Activity {
-              WebView webView;
+              private WebView webView;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-
-                  getWindow().addFlags(
-                      WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                  );
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
                   webView = new WebView(this);
-                  webView.getSettings().setJavaScriptEnabled(true);
-                  webView.getSettings().setDomStorageEnabled(true);
-                  webView.getSettings().setDatabaseEnabled(true);
-                  webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
 
                   webView.setWebViewClient(new WebViewClient());
                   webView.setWebChromeClient(new WebChromeClient());
-
                   setContentView(webView);
 
-                  webView.loadUrl(
-                      "https://eightball-multiplayer-1-5.onrender.com"
-                  );
+                  if (savedInstanceState != null) {
+                      webView.restoreState(savedInstanceState);
+                  } else {
+                      webView.loadUrl("https://eightball-multiplayer-1-5.onrender.com");
+                  }
+              }
+
+              @Override
+              protected void onSaveInstanceState(Bundle outState) {
+                  super.onSaveInstanceState(outState);
+                  if (webView != null) webView.saveState(outState);
               }
 
               @Override
@@ -150,6 +155,33 @@ jobs:
               }
           }
           EOF
+
+      - name: Configurar ícone do Bilhar dos MANOS
+        run: |
+          if [ ! -f bilhar_dos_manos_icon_512.png ]; then
+            echo "ERRO: bilhar_dos_manos_icon_512.png não foi encontrado na raiz do repositório."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from PIL import Image
+          import os
+
+          source = Image.open("bilhar_dos_manos_icon_512.png").convert("RGBA")
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192,
+          }
+          for folder, size in sizes.items():
+              path = f"android/app/src/main/res/{folder}"
+              os.makedirs(path, exist_ok=True)
+              source.resize((size, size), Image.Resampling.LANCZOS).save(
+                  f"{path}/ic_launcher.png"
+              )
+          PY
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
